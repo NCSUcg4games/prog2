@@ -1,8 +1,9 @@
 /* GLOBAL CONSTANTS AND VARIABLES */
 
 /* assignment specific globals */
-const INPUT_TRIANGLES_URL = "https://ncsucgclass.github.io/prog3/triangles.json"; // triangles file loc
-const INPUT_SPHERES_URL = "https://ncsucgclass.github.io/prog3/spheres.json"; // spheres file loc
+const INPUT_URL = "https://ncsucgclass.github.io/prog3/"; // location of input files
+const INPUT_TRIANGLES_URL = INPUT_URL + "triangles.json"; // triangles file loc
+const INPUT_SPHERES_URL = INPUT_URL + "spheres.json"; // spheres file loc
 var defaultEye = vec3.fromValues(0.5,0.5,-0.5); // default eye position in world space
 var defaultCenter = vec3.fromValues(0.5,0.5,0.5); // default view direction in world space
 var defaultUp = vec3.fromValues(0,1,0); // default view up vector
@@ -12,31 +13,39 @@ var lightSpecular = vec3.fromValues(1,1,1); // default light specular emission
 var lightPosition = vec3.fromValues(2,4,-0.5); // default light position
 var rotateTheta = Math.PI/50; // how much to rotate models by with each key press
 
-/* webgl and geometry data */
+/* input model data */
 var gl = null; // the all powerful gl object. It's all here folks!
 var inputTriangles = []; // the triangle data as loaded from input files
 var numTriangleSets = 0; // how many triangle sets in input scene
+var triSetSizes = []; // this contains the size of each triangle set
 var inputSpheres = []; // the sphere data as loaded from input files
 var numSpheres = 0; // how many spheres in the input scene
-var vertexBuffers = []; // this contains vertex coordinate lists by set, in triples
-var normalBuffers = []; // this contains normal component lists by set, in triples
-var triSetSizes = []; // this contains the size of each triangle set
-var triangleBuffers = []; // lists of indices into vertexBuffers by set, in triples
-var viewDelta = 0; // how much to displace view with each key press
+
+/* model data prepared for webgl */
+var vertexBuffers = []; // vertex coordinate lists by set, in triples
+var normalBuffers = []; // normal component lists by set, in triples
+var uvBuffers = []; // uv coord lists by set, in duples
+var triangleBuffers = []; // indices into vertexBuffers by set, in triples
+var textures = []; // texture imagery by set
 
 /* shader parameter locations */
 var vPosAttribLoc; // where to put position for vertex shader
+var vNormAttribLoc; // where to put normal for vertex shader
+var vUVAttribLoc; // where to put UV for vertex shader
+var mMatrixULoc; // where to put model matrix for vertex shader
+var pvmMatrixULoc; // where to put project model view matrix for vertex shader
 var ambientULoc; // where to put ambient reflecivity for fragment shader
 var diffuseULoc; // where to put diffuse reflecivity for fragment shader
 var specularULoc; // where to put specular reflecivity for fragment shader
 var shininessULoc; // where to put specular exponent for fragment shader
-var mMatrixULoc; // where to put model matrix for vertex shader
-var pvmMatrixULoc; // where to put project model view matrix for vertex shader
+var usingTextureULoc; // where to put using texture boolean for fragment shader
+var textureULoc; // where to put texture for fragment shader
 
 /* interaction variables */
 var Eye = vec3.clone(defaultEye); // eye position in world space
 var Center = vec3.clone(defaultCenter); // view direction in world space
 var Up = vec3.clone(defaultUp); // view up vector in world space
+var viewDelta = 0; // how much to displace view with each key press
 
 // ASSIGNMENT HELPER FUNCTIONS
 
@@ -226,8 +235,8 @@ function handleKeyDown(event) {
             } // end for all triangle sets
             for (var whichSphere=0; whichSphere<numSpheres; whichSphere++) {
                 vec3.set(inputSpheres[whichSphere].translation,0,0,0);
-                vec3.set(inputSpheres[whichTriSet].xAxis,1,0,0);
-                vec3.set(inputSpheres[whichTriSet].yAxis,0,1,0);
+                vec3.set(inputSpheres[whichSphere].xAxis,1,0,0);
+                vec3.set(inputSpheres[whichSphere].yAxis,0,1,0);
             } // end for all spheres
             break;
     } // end switch
@@ -244,11 +253,15 @@ function setupWebGL() {
     var cw = imageCanvas.width, ch = imageCanvas.height; 
     imageContext = imageCanvas.getContext("2d"); 
     var bkgdImage = new Image(); 
-    bkgdImage.src = "https://ncsucgclass.github.io/prog3/stars.jpg";
-    bkgdImage.onload = function(){
+    bkgdImage.crossOrigin = "Anonymous"; // request anon cross origin access
+    bkgdImage.onload = function() {
         var iw = bkgdImage.width, ih = bkgdImage.height;
         imageContext.drawImage(bkgdImage,0,0,iw,ih,0,0,cw,ch);   
-    } // end onload callback
+    } // end on image load callback 
+    bkgdImage.onerror = function() {
+        console.log("Unable to load background image! Continuing without one...");
+    } // end on image error callback
+    bkgdImage.src = INPUT_URL + "stars.jpg";
     
     // create a webgl canvas and set it up
     var webGLCanvas = document.getElementById("myWebGLCanvas"); // create a webgl canvas
@@ -272,6 +285,37 @@ function setupWebGL() {
 // read models in, load them into webgl buffers
 function loadModels() {
     
+    // load a texture for the current set or sphere
+    function loadTexture(whichModel,currModel,textureFile) {
+        
+        // load a 1x1 gray image into texture for use when no texture, and until texture loads
+        textures[whichModel] = gl.createTexture(); // new texture struct for model
+        var currTexture = textures[whichModel]; // shorthand
+        gl.bindTexture(gl.TEXTURE_2D, currTexture); // activate model's texture
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true); // invert vertical texcoord v, load gray 1x1
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,new Uint8Array([64, 64, 64, 255]));        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true); // invert vertical texcoord v
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR); // use linear filter for magnification
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR); // use mipmap for minification
+        gl.generateMipmap(gl.TEXTURE_2D); // construct mipmap pyramid
+        gl.bindTexture(gl.TEXTURE_2D, null); // deactivate model's texture
+        
+        // if there is a texture to load, asynchronously load it
+        if (textureFile != false) {
+            currTexture.image = new Image(); // new image struct for texture
+            currTexture.image.onload = function () { // when texture image loaded...
+                gl.bindTexture(gl.TEXTURE_2D, currTexture); // activate model's new texture
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, currTexture.image); // norm 2D texture
+                gl.generateMipmap(gl.TEXTURE_2D); // rebuild mipmap pyramid
+                gl.bindTexture(gl.TEXTURE_2D, null); // deactivate model's new texture
+            } // end when texture image loaded
+            currTexture.image.onerror = function () { // when texture image load fails...
+                console.log("Unable to load texture " + textureFile); 
+            } // end when texture image load fails
+            currTexture.image.crossOrigin = "Anonymous"; // allow cross origin load, please
+            currTexture.image.src = INPUT_URL + textureFile; // set image location
+        } // end if material has a texture
+    } // end load texture
+    
     // make a sphere with radius 1 at the origin, with numLongSteps longitudes. 
     // Returns verts, tris and normals.
     function makeSphere(numLongSteps) {
@@ -283,40 +327,43 @@ function loadModels() {
                 throw "in makeSphere: number of longitude steps too small!";
             else { // good number longitude steps
             
-                // make vertices and normals
+                // make vertices, normals and uvs -- repeat longitude seam
+                const INVPI = 1/Math.PI, TWOPI = Math.PI+Math.PI, INV2PI = 1/TWOPI, epsilon=0.001*Math.PI;
                 var sphereVertices = [0,-1,0]; // vertices to return, init to south pole
-                var angleIncr = (Math.PI+Math.PI) / numLongSteps; // angular increment 
-                var latLimitAngle = angleIncr * (Math.floor(numLongSteps/4)-1); // start/end lat angle
-                var latRadius, latY; // radius and Y at current latitude
-                for (var latAngle=-latLimitAngle; latAngle<=latLimitAngle; latAngle+=angleIncr) {
+                var sphereUvs = [0.5,0]; // uvs to return, bottom texture row collapsed to one texel
+                var angleIncr = TWOPI / numLongSteps; // angular increment 
+                var latLimitAngle = angleIncr * (Math.floor(numLongSteps*0.25)-1); // start/end lat angle
+                var latRadius, latY, latV; // radius, Y and texture V at current latitude
+                for (var latAngle=-latLimitAngle; latAngle<=latLimitAngle+epsilon; latAngle+=angleIncr) {
                     latRadius = Math.cos(latAngle); // radius of current latitude
                     latY = Math.sin(latAngle); // height at current latitude
-                    for (var longAngle=0; longAngle<2*Math.PI; longAngle+=angleIncr) // for each long
-                        sphereVertices.push(latRadius*Math.sin(longAngle),latY,latRadius*Math.cos(longAngle));
+                    latV = latAngle*INVPI + 0.5; // texture v = (latAngle + 0.5*PI) / PI
+                    for (var longAngle=0; longAngle<=TWOPI+epsilon; longAngle+=angleIncr) { // for each long
+                        sphereVertices.push(-latRadius*Math.sin(longAngle),latY,latRadius*Math.cos(longAngle));
+                        sphereUvs.push(longAngle*INV2PI,latV); // texture u = (longAngle/2PI)
+                    } // end for each longitude
                 } // end for each latitude
                 sphereVertices.push(0,1,0); // add north pole
+                sphereUvs.push(0.5,1); // top texture row collapsed to one texel
                 var sphereNormals = sphereVertices.slice(); // for this sphere, vertices = normals; return these
 
-                // make triangles, from south pole to middle latitudes to north pole
+                // make triangles, first poles then middle latitudes
                 var sphereTriangles = []; // triangles to return
-                for (var whichLong=1; whichLong<numLongSteps; whichLong++) // south pole
+                var numVertices = Math.floor(sphereVertices.length/3); // number of vertices in sphere
+                for (var whichLong=1; whichLong<=numLongSteps; whichLong++) { // poles
                     sphereTriangles.push(0,whichLong,whichLong+1);
-                sphereTriangles.push(0,numLongSteps,1); // longitude wrap tri
+                    sphereTriangles.push(numVertices-1,numVertices-whichLong-1,numVertices-whichLong-2);
+                } // end for each long
                 var llVertex; // lower left vertex in the current quad
                 for (var whichLat=0; whichLat<(numLongSteps/2 - 2); whichLat++) { // middle lats
-                    for (var whichLong=0; whichLong<numLongSteps-1; whichLong++) {
-                        llVertex = whichLat*numLongSteps + whichLong + 1;
-                        sphereTriangles.push(llVertex,llVertex+numLongSteps,llVertex+numLongSteps+1);
-                        sphereTriangles.push(llVertex,llVertex+numLongSteps+1,llVertex+1);
+                    for (var whichLong=0; whichLong<numLongSteps; whichLong++) {
+                        llVertex = whichLat*(numLongSteps+1) + whichLong + 1;
+                        sphereTriangles.push(llVertex,llVertex+numLongSteps+1,llVertex+numLongSteps+2);
+                        sphereTriangles.push(llVertex,llVertex+numLongSteps+2,llVertex+1);
                     } // end for each longitude
-                    sphereTriangles.push(llVertex+1,llVertex+numLongSteps+1,llVertex+2);
-                    sphereTriangles.push(llVertex+1,llVertex+2,llVertex-numLongSteps+2);
                 } // end for each latitude
-                for (var whichLong=llVertex+2; whichLong<llVertex+numLongSteps+1; whichLong++) // north pole
-                    sphereTriangles.push(whichLong,sphereVertices.length/3-1,whichLong+1);
-                sphereTriangles.push(sphereVertices.length/3-2,sphereVertices.length/3-1,sphereVertices.length/3-numLongSteps-1); // longitude wrap
             } // end if good number longitude steps
-            return({vertices:sphereVertices, normals:sphereNormals, triangles:sphereTriangles});
+            return({vertices:sphereVertices, normals:sphereNormals, uvs:sphereUvs, triangles:sphereTriangles});
         } // end try
         
         catch(e) {
@@ -330,10 +377,12 @@ function loadModels() {
         if (inputTriangles == String.null)
             throw "Unable to load triangles file!";
         else {
+            var currSet; // the current triangle set
             var whichSetVert; // index of vertex in current triangle set
             var whichSetTri; // index of triangle in current triangle set
-            var vtxToAdd; // vtx coords to add to the coord array
-            var normToAdd; // vtx normal to add to the coord array
+            var vtxToAdd; // vtx coords to add to the vertices array
+            var normToAdd; // vtx normal to add to the normal array
+            var uvToAdd; // uv coords to add to the uv arry
             var triToAdd; // tri indices to add to the index array
             var maxCorner = vec3.fromValues(Number.MIN_VALUE,Number.MIN_VALUE,Number.MIN_VALUE); // bbox corner
             var minCorner = vec3.fromValues(Number.MAX_VALUE,Number.MAX_VALUE,Number.MAX_VALUE); // other corner
@@ -341,49 +390,57 @@ function loadModels() {
             // process each triangle set to load webgl vertex and triangle buffers
             numTriangleSets = inputTriangles.length; // remember how many tri sets
             for (var whichSet=0; whichSet<numTriangleSets; whichSet++) { // for each tri set
+                currSet = inputTriangles[whichSet];
                 
                 // set up hilighting, modeling translation and rotation
-                inputTriangles[whichSet].center = vec3.fromValues(0,0,0);  // center point of tri set
-                inputTriangles[whichSet].on = false; // not highlighted
-                inputTriangles[whichSet].translation = vec3.fromValues(0,0,0); // no translation
-                inputTriangles[whichSet].xAxis = vec3.fromValues(1,0,0); // model X axis
-                inputTriangles[whichSet].yAxis = vec3.fromValues(0,1,0); // model Y axis 
+                currSet.center = vec3.fromValues(0,0,0);  // center point of tri set
+                currSet.on = false; // not highlighted
+                currSet.translation = vec3.fromValues(0,0,0); // no translation
+                currSet.xAxis = vec3.fromValues(1,0,0); // model X axis
+                currSet.yAxis = vec3.fromValues(0,1,0); // model Y axis 
 
-                // set up the vertex and normal arrays, define model center and axes
-                inputTriangles[whichSet].glVertices = []; // flat coord list for webgl
-                inputTriangles[whichSet].glNormals = []; // flat normal list for webgl
-                var numVerts = inputTriangles[whichSet].vertices.length; // num vertices in tri set
+                // set up the vertex, normal and uv arrays, define model center and axes
+                currSet.glVertices = []; // flat coord list for webgl
+                currSet.glNormals = []; // flat normal list for webgl
+                currSet.glUvs = []; // flat texture coord list for webgl
+                var numVerts = currSet.vertices.length; // num vertices in tri set
                 for (whichSetVert=0; whichSetVert<numVerts; whichSetVert++) { // verts in set
-                    vtxToAdd = inputTriangles[whichSet].vertices[whichSetVert]; // get vertex to add
-                    normToAdd = inputTriangles[whichSet].normals[whichSetVert]; // get normal to add
-                    inputTriangles[whichSet].glVertices.push(vtxToAdd[0],vtxToAdd[1],vtxToAdd[2]); // put coords in set coord list
-                    inputTriangles[whichSet].glNormals.push(normToAdd[0],normToAdd[1],normToAdd[2]); // put normal in set coord list
+                    vtxToAdd = currSet.vertices[whichSetVert]; // get vertex to add
+                    normToAdd = currSet.normals[whichSetVert]; // get normal to add
+                    uvToAdd = currSet.uvs[whichSetVert]; // get uv to add
+                    currSet.glVertices.push(vtxToAdd[0],vtxToAdd[1],vtxToAdd[2]); // put coords in set vertex list
+                    currSet.glNormals.push(normToAdd[0],normToAdd[1],normToAdd[2]); // put normal in set normal list
+                    currSet.glUvs.push(uvToAdd[0],uvToAdd[1]); // put uv in set uv list
                     vec3.max(maxCorner,maxCorner,vtxToAdd); // update world bounding box corner maxima
                     vec3.min(minCorner,minCorner,vtxToAdd); // update world bounding box corner minima
-                    vec3.add(inputTriangles[whichSet].center,inputTriangles[whichSet].center,vtxToAdd); // add to ctr sum
+                    vec3.add(currSet.center,currSet.center,vtxToAdd); // add to ctr sum
                 } // end for vertices in set
-                vec3.scale(inputTriangles[whichSet].center,inputTriangles[whichSet].center,1/numVerts); // avg ctr sum
+                vec3.scale(currSet.center,currSet.center,1/numVerts); // avg ctr sum
 
-                // send the vertex coords and normals to webGL
+                // send the vertex coords, normals and uvs to webGL; load texture
                 vertexBuffers[whichSet] = gl.createBuffer(); // init empty webgl set vertex coord buffer
                 gl.bindBuffer(gl.ARRAY_BUFFER,vertexBuffers[whichSet]); // activate that buffer
-                gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(inputTriangles[whichSet].glVertices),gl.STATIC_DRAW); // data in
+                gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(currSet.glVertices),gl.STATIC_DRAW); // data in
                 normalBuffers[whichSet] = gl.createBuffer(); // init empty webgl set normal component buffer
                 gl.bindBuffer(gl.ARRAY_BUFFER,normalBuffers[whichSet]); // activate that buffer
-                gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(inputTriangles[whichSet].glNormals),gl.STATIC_DRAW); // data in
-            
+                gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(currSet.glNormals),gl.STATIC_DRAW); // data in
+                uvBuffers[whichSet] = gl.createBuffer(); // init empty webgl set uv coord buffer
+                gl.bindBuffer(gl.ARRAY_BUFFER,uvBuffers[whichSet]); // activate that buffer
+                gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(currSet.glUvs),gl.STATIC_DRAW); // data in
+                loadTexture(whichSet,currSet,currSet.material.texture); // load tri set's texture
+
                 // set up the triangle index array, adjusting indices across sets
-                inputTriangles[whichSet].glTriangles = []; // flat index list for webgl
-                triSetSizes[whichSet] = inputTriangles[whichSet].triangles.length; // number of tris in this set
+                currSet.glTriangles = []; // flat index list for webgl
+                triSetSizes[whichSet] = currSet.triangles.length; // number of tris in this set
                 for (whichSetTri=0; whichSetTri<triSetSizes[whichSet]; whichSetTri++) {
-                    triToAdd = inputTriangles[whichSet].triangles[whichSetTri]; // get tri to add
-                    inputTriangles[whichSet].glTriangles.push(triToAdd[0],triToAdd[1],triToAdd[2]); // put indices in set list
+                    triToAdd = currSet.triangles[whichSetTri]; // get tri to add
+                    currSet.glTriangles.push(triToAdd[0],triToAdd[1],triToAdd[2]); // put indices in set list
                 } // end for triangles in set
 
                 // send the triangle indices to webGL
                 triangleBuffers.push(gl.createBuffer()); // init empty triangle index buffer
                 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, triangleBuffers[whichSet]); // activate that buffer
-                gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,new Uint16Array(inputTriangles[whichSet].glTriangles),gl.STATIC_DRAW); // data in
+                gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,new Uint16Array(currSet.glTriangles),gl.STATIC_DRAW); // data in
 
             } // end for each triangle set 
         
@@ -409,10 +466,11 @@ function loadModels() {
                     vec3.set(maxXYZ,sphere.x+sphere.r,sphere.y+sphere.r,sphere.z+sphere.r); 
                     vec3.min(minCorner,minCorner,minXYZ); // update world bbox min corner
                     vec3.max(maxCorner,maxCorner,maxXYZ); // update world bbox max corner
+                    loadTexture(numTriangleSets+whichSphere,sphere,sphere.texture); // load the sphere's texture
                 } // end for each sphere
                 viewDelta = vec3.length(vec3.subtract(temp,maxCorner,minCorner)) / 100; // set global
 
-                // make one sphere instance that will be reused
+                // make one sphere instance that will be reused, with 32 longitude steps
                 var oneSphere = makeSphere(32);
 
                 // send the sphere vertex coords and normals to webGL
@@ -422,6 +480,9 @@ function loadModels() {
                 normalBuffers.push(gl.createBuffer()); // init empty webgl sphere vertex normal buffer
                 gl.bindBuffer(gl.ARRAY_BUFFER,normalBuffers[normalBuffers.length-1]); // activate that buffer
                 gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(oneSphere.normals),gl.STATIC_DRAW); // data in
+                uvBuffers.push(gl.createBuffer()); // init empty webgl sphere vertex uv buffer
+                gl.bindBuffer(gl.ARRAY_BUFFER,uvBuffers[uvBuffers.length-1]); // activate that buffer
+                gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(oneSphere.uvs),gl.STATIC_DRAW); // data in
         
                 triSetSizes.push(oneSphere.triangles.length);
 
@@ -445,12 +506,14 @@ function setupShaders() {
     var vShaderCode = `
         attribute vec3 aVertexPosition; // vertex position
         attribute vec3 aVertexNormal; // vertex normal
+        attribute vec2 aVertexUV; // vertex texture uv
         
         uniform mat4 umMatrix; // the model matrix
         uniform mat4 upvmMatrix; // the project view model matrix
         
         varying vec3 vWorldPos; // interpolated world position of vertex
         varying vec3 vVertexNormal; // interpolated normal for frag shader
+        varying vec2 vVertexUV; // interpolated uv for frag shader
 
         void main(void) {
             
@@ -462,6 +525,9 @@ function setupShaders() {
             // vertex normal (assume no non-uniform scale)
             vec4 vWorldNormal4 = umMatrix * vec4(aVertexNormal, 0.0);
             vVertexNormal = normalize(vec3(vWorldNormal4.x,vWorldNormal4.y,vWorldNormal4.z)); 
+            
+            // vertex uv
+            vVertexUV = aVertexUV;
         }
     `;
     
@@ -484,10 +550,15 @@ function setupShaders() {
         uniform vec3 uSpecular; // the specular reflectivity
         uniform float uShininess; // the specular exponent
         
+        // texture properties
+        uniform bool uUsingTexture; // if we are using a texture
+        uniform sampler2D uTexture; // the texture for the fragment
+        varying vec2 vVertexUV; // texture uv of fragment
+            
         // geometry properties
         varying vec3 vWorldPos; // world xyz of fragment
         varying vec3 vVertexNormal; // normal of fragment
-            
+        
         void main(void) {
         
             // ambient term
@@ -505,10 +576,18 @@ function setupShaders() {
             float highlight = pow(max(0.0,dot(normal,halfVec)),uShininess);
             vec3 specular = uSpecular*uLightSpecular*highlight; // specular term
             
-            // combine to output color
-            vec3 colorOut = ambient + diffuse + specular; // no specular yet
-            gl_FragColor = vec4(colorOut, 1.0); 
-        }
+            // combine to find lit color
+            vec3 litColor = ambient + diffuse + specular; 
+            
+            if (!uUsingTexture) {
+                gl_FragColor = vec4(litColor, 1.0);
+            } else {
+                vec4 texColor = texture2D(uTexture, vec2(vVertexUV.s, vVertexUV.t));
+            
+                // gl_FragColor = vec4(texColor.rgb * litColor, texColor.a);
+                gl_FragColor = vec4(texColor.rgb * litColor, 1.0);
+            } // end if using texture
+        } // end main
     `;
     
     try {
@@ -542,6 +621,8 @@ function setupShaders() {
                 gl.enableVertexAttribArray(vPosAttribLoc); // connect attrib to array
                 vNormAttribLoc = gl.getAttribLocation(shaderProgram, "aVertexNormal"); // ptr to vertex normal attrib
                 gl.enableVertexAttribArray(vNormAttribLoc); // connect attrib to array
+                vUVAttribLoc = gl.getAttribLocation(shaderProgram, "aVertexUV"); // ptr to vertex UV attrib
+                gl.enableVertexAttribArray(vUVAttribLoc); // connect attrib to array
                 
                 // locate vertex uniforms
                 mMatrixULoc = gl.getUniformLocation(shaderProgram, "umMatrix"); // ptr to mmat
@@ -557,8 +638,10 @@ function setupShaders() {
                 diffuseULoc = gl.getUniformLocation(shaderProgram, "uDiffuse"); // ptr to diffuse
                 specularULoc = gl.getUniformLocation(shaderProgram, "uSpecular"); // ptr to specular
                 shininessULoc = gl.getUniformLocation(shaderProgram, "uShininess"); // ptr to shininess
+                usingTextureULoc = gl.getUniformLocation(shaderProgram, "uUsingTexture"); // ptr to using texture
+                textureULoc = gl.getUniformLocation(shaderProgram, "uTexture"); // ptr to texture
                 
-                // pass global constants into fragment uniforms
+                // pass global (not per model) constants into fragment uniforms
                 gl.uniform3fv(eyePositionULoc,Eye); // pass in the eye's position
                 gl.uniform3fv(lightAmbientULoc,lightAmbient); // pass in the light's ambient emission
                 gl.uniform3fv(lightDiffuseULoc,lightDiffuse); // pass in the light's diffuse emission
@@ -599,9 +682,10 @@ function renderModels() {
     var mMatrix = mat4.create(); // model matrix
     var hpvMatrix = mat4.create(); // hand * proj * view matrices
     var hpvmMatrix = mat4.create(); // hand * proj * view * model matrices
-    const highlightMaterial = {ambient:[0.5,0.5,0], diffuse:[0.5,0.5,0], specular:[0,0,0], n:1}; // hlht mat
+    const HIGHLIGHTMATERIAL = 
+        {ambient:[0.5,0.5,0], diffuse:[0.5,0.5,0], specular:[0,0,0], n:1, alpha:1, texture:false}; // hlht mat
     
-    window.requestAnimationFrame(renderModels); // set up frame render callbacks
+    window.requestAnimationFrame(renderModels); // set up frame render callback
     
     gl.clear(/*gl.COLOR_BUFFER_BIT |*/ gl.DEPTH_BUFFER_BIT); // clear frame/depth buffers
     
@@ -625,19 +709,25 @@ function renderModels() {
         
         // reflectivity: feed to the fragment shader
         if (inputTriangles[whichTriSet].on)
-            setMaterial = highlightMaterial; // highlight material
+            setMaterial = HIGHLIGHTMATERIAL; // highlight material
         else
             setMaterial = currSet.material; // normal material
         gl.uniform3fv(ambientULoc,setMaterial.ambient); // pass in the ambient reflectivity
         gl.uniform3fv(diffuseULoc,setMaterial.diffuse); // pass in the diffuse reflectivity
         gl.uniform3fv(specularULoc,setMaterial.specular); // pass in the specular reflectivity
         gl.uniform1f(shininessULoc,setMaterial.n); // pass in the specular exponent
+        gl.uniform1i(usingTextureULoc,(currSet.material.texture != false)); // whether the set uses texture
+        gl.activeTexture(gl.TEXTURE0); // bind to active texture 0 (the first)
+        gl.bindTexture(gl.TEXTURE_2D, textures[whichTriSet]); // bind the set's texture
+        gl.uniform1i(textureULoc, 0); // pass in the texture and active texture 0
         
-        // vertex buffer: activate and feed into vertex shader
-        gl.bindBuffer(gl.ARRAY_BUFFER,vertexBuffers[whichTriSet]); // activate
+        // position, normal and uv buffers: activate and feed into vertex shader
+        gl.bindBuffer(gl.ARRAY_BUFFER,vertexBuffers[whichTriSet]); // activate position
         gl.vertexAttribPointer(vPosAttribLoc,3,gl.FLOAT,false,0,0); // feed
-        gl.bindBuffer(gl.ARRAY_BUFFER,normalBuffers[whichTriSet]); // activate
+        gl.bindBuffer(gl.ARRAY_BUFFER,normalBuffers[whichTriSet]); // activate normal
         gl.vertexAttribPointer(vNormAttribLoc,3,gl.FLOAT,false,0,0); // feed
+        gl.bindBuffer(gl.ARRAY_BUFFER,uvBuffers[whichTriSet]); // activate uv
+        gl.vertexAttribPointer(vUVAttribLoc,2,gl.FLOAT,false,0,0); // feed
 
         // triangle buffer: activate and render
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,triangleBuffers[whichTriSet]); // activate
@@ -651,6 +741,8 @@ function renderModels() {
     gl.vertexAttribPointer(vPosAttribLoc,3,gl.FLOAT,false,0,0); // feed vertex buffer to shader
     gl.bindBuffer(gl.ARRAY_BUFFER,normalBuffers[normalBuffers.length-1]); // activate normal buffer
     gl.vertexAttribPointer(vNormAttribLoc,3,gl.FLOAT,false,0,0); // feed normal buffer to shader
+    gl.bindBuffer(gl.ARRAY_BUFFER,uvBuffers[uvBuffers.length-1]); // activate uv
+    gl.vertexAttribPointer(vUVAttribLoc,2,gl.FLOAT,false,0,0); // feed
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,triangleBuffers[triangleBuffers.length-1]); // activate tri buffer
     
     for (var whichSphere=0; whichSphere<numSpheres; whichSphere++) {
@@ -667,13 +759,17 @@ function renderModels() {
 
         // reflectivity: feed to the fragment shader
         if (sphere.on)
-            currentMaterial = highlightMaterial;
+            currentMaterial = HIGHLIGHTMATERIAL;
         else
             currentMaterial = sphere;
         gl.uniform3fv(ambientULoc,currentMaterial.ambient); // pass in the ambient reflectivity
         gl.uniform3fv(diffuseULoc,currentMaterial.diffuse); // pass in the diffuse reflectivity
         gl.uniform3fv(specularULoc,currentMaterial.specular); // pass in the specular reflectivity
         gl.uniform1f(shininessULoc,currentMaterial.n); // pass in the specular exponent
+        gl.uniform1i(usingTextureULoc,(sphere.texture != false)); // whether the sphere uses texture
+        gl.activeTexture(gl.TEXTURE0); // bind to active texture 0 (the first)
+        gl.bindTexture(gl.TEXTURE_2D, textures[numTriangleSets+whichSphere]); // bind the set's texture
+        gl.uniform1i(textureULoc, 0); // pass in the texture and active texture 0
 
         // draw a transformed instance of the sphere
         gl.drawElements(gl.TRIANGLES,triSetSizes[triSetSizes.length-1],gl.UNSIGNED_SHORT,0); // render
