@@ -1,7 +1,7 @@
 /* GLOBAL CONSTANTS AND VARIABLES */
 
 /* assignment specific globals */
-const INPUT_URL = "https://ncsucgclass.github.io/prog3/"; // location of input files
+const INPUT_URL = "https://ncsucg4games.github.io/prog2/"; // location of input files
 const INPUT_TRIANGLES_URL = INPUT_URL + "triangles.json"; // triangles file loc
 const INPUT_SPHERES_URL = INPUT_URL + "spheres.json"; // spheres file loc
 var defaultEye = vec3.fromValues(0.5,0.5,-0.5); // default eye position in world space
