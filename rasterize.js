@@ -153,7 +153,7 @@ function handleKeyDown(event) {
         case "KeyS": // translate view backward, rotate up with shift
             if (event.getModifierState("Shift")) {
                 Center = vec3.add(Center,Center,vec3.scale(temp,Up,viewDelta));
-                Up = vec.cross(Up,viewRight,vec3.subtract(lookAt,Center,Eye)); /* global side effect */
+                Up = vec3.cross(Up,viewRight,vec3.subtract(lookAt,Center,Eye)); /* global side effect */
             } else {
                 Eye = vec3.add(Eye,Eye,vec3.scale(temp,lookAt,-viewDelta));
                 Center = vec3.add(Center,Center,vec3.scale(temp,lookAt,-viewDelta));
@@ -162,7 +162,7 @@ function handleKeyDown(event) {
         case "KeyW": // translate view forward, rotate down with shift
             if (event.getModifierState("Shift")) {
                 Center = vec3.add(Center,Center,vec3.scale(temp,Up,-viewDelta));
-                Up = vec.cross(Up,viewRight,vec3.subtract(lookAt,Center,Eye)); /* global side effect */
+                Up = vec3.cross(Up,viewRight,vec3.subtract(lookAt,Center,Eye)); /* global side effect */
             } else {
                 Eye = vec3.add(Eye,Eye,vec3.scale(temp,lookAt,viewDelta));
                 Center = vec3.add(Center,Center,vec3.scale(temp,lookAt,viewDelta));
